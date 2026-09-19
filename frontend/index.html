@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>SNR-AWARE AMC // Tactical RF Classifier</title>
+  <meta name="description" content="AI-powered SNR-Aware Automatic Modulation Classification System. Estimates SNR region and identifies signal modulation from raw I/Q .npy files." />
+
+  <!-- Google Fonts: Orbitron, JetBrains Mono, Share Tech Mono -->
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:ital,wght@0,300;0,400;0,600;0,700;1,400&family=Orbitron:wght@600;800;900&family=Share+Tech+Mono&display=swap" rel="stylesheet" />
+
+  <!-- Chart.js for Oscilloscope Visualization -->
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.3/dist/chart.umd.min.js"></script>
+
+  <!-- Cyberpunk HUD Stylesheet -->
+  <link rel="stylesheet" href="css/style.css" />
+</head>
+<body>
+
+  <!-- Scanline and Vignette Screen Overlays -->
+  <div class="cyber-scanlines" aria-hidden="true"></div>
+  <div class="cyber-vignette" aria-hidden="true"></div>
+
+  <!-- Main HUD Container -->
+  <div class="app-container">
+
+    <!-- ═══════════════════════════════════════════════════════════
+         HEADER
+    ═══════════════════════════════════════════════════════════ -->
+    <header class="header" role="banner">
+      <div class="header__badge">
+        <span class="header__badge-dot" id="statusDot"></span>
+        <span class="header__badge-text" id="statusBadge">SYS.ONLINE // AI_SIGINT_V1.0</span>
+      </div>
+      <h1 class="header__title cyber-glitch" data-text="SNR-AWARE AMC">SNR-AWARE AMC</h1>
+      <div class="header__sub-bar">
+        <span class="prompt-arrow">&gt;</span>
+        <span class="header__subtitle">TACTICAL RF CLASSIFIER // ESTIMATING SNR REGION &amp; MODULATION REGIME</span>
+        <span class="cursor-blink" aria-hidden="true">_</span>
+      </div>
+    </header>
+
+    <main id="mainContent">
+
+      <!-- ═══════════════════════════════════════════════════════════
+           SIGNAL UPLOAD
+      ═══════════════════════════════════════════════════════════ -->
+      <section class="cyber-card" aria-label="Signal Ingestion Module">
+        <div class="terminal-bar">
+          <div class="terminal-dots" aria-hidden="true">
+            <span class="t-dot t-dot--red"></span>
+            <span class="t-dot t-dot--yellow"></span>
+            <span class="t-dot t-dot--green"></span>
+          </div>
+          <span class="terminal-title">MODULE://IQ_STREAM_INGEST</span>
+          <span class="terminal-tag" id="bufferTag">[READY]</span>
+        </div>
+
+        <div class="card__title">
+          <span class="card__title-prefix">&gt;&gt;</span>
+          <span>SIGNAL UPLOAD</span>
+          <span class="card__title-code">FORMAT: .NPY</span>
+        </div>
+
+        <!-- Interactive Drag & Drop Zone -->
+        <div class="upload-zone" id="dropZone" role="region" aria-label="Drop zone for signal files">
+          <span class="hud-bracket hud-bracket--tl" aria-hidden="true"></span>
+          <span class="hud-bracket hud-bracket--tr" aria-hidden="true"></span>
+          <span class="hud-bracket hud-bracket--bl" aria-hidden="true"></span>
+          <span class="hud-bracket hud-bracket--br" aria-hidden="true"></span>
+          <div class="upload-zone__scanner" aria-hidden="true"></div>
+
+          <input
+            type="file"
+            id="fileInput"
+            accept=".npy"
+            aria-label="Upload .npy signal file"
+          />
+
+          <div class="upload-zone__icon" aria-hidden="true">📡</div>
+          <div class="upload-zone__text">DROP IQ SIGNAL TELEMETRY OR CLICK TO INTERFACE</div>
+          <div class="upload-zone__hint">
+            FORMAT: .NPY &mdash; EXPECTS <code>(2, 128)</code> TENSOR (I/Q FLOAT32)
+          </div>
+        </div>
+
+        <!-- File Details Preview -->
+        <div class="file-info" id="fileInfo">
+          <div class="file-info__icon" aria-hidden="true">📊</div>
+          <div class="file-info__details">
+            <div class="file-info__name" id="fileName">&mdash;</div>
+            <div class="file-info__meta" id="fileMeta">&mdash;</div>
+          </div>
+          <button class="file-info__remove" id="removeFileBtn" title="Remove signal file" type="button" aria-label="Remove selected file">✕</button>
+        </div>
+      </section>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           ACTION BUTTONS
+      ═══════════════════════════════════════════════════════════ -->
+      <div class="actions-row">
+        <button class="btn-cyber btn-predict" id="predictBtn" disabled type="button" aria-disabled="true">
+          <span class="spinner" id="spinner" aria-hidden="true"></span>
+          <span class="btn-predict__label" id="predictLabel">&gt; EXECUTE PREDICTION</span>
+        </button>
+        <button class="btn-cyber btn-cyber--secondary" id="sdrBtn" type="button">
+          &gt; TAKE LIVE SDR INPUT
+        </button>
+      </div>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           SIGNAL OSCILLOGRAM / WAVEFORM
+      ═══════════════════════════════════════════════════════════ -->
+      <section class="waveform-section" id="waveformSection" aria-label="Signal Oscillogram">
+        <div class="cyber-card">
+          <div class="terminal-bar">
+            <div class="terminal-dots" aria-hidden="true">
+              <span class="t-dot t-dot--red"></span>
+              <span class="t-dot t-dot--yellow"></span>
+              <span class="t-dot t-dot--green"></span>
+            </div>
+            <span class="terminal-title">OSCILLOSCOPE // SIGNAL OSCILLOGRAM</span>
+            <span class="terminal-tag" id="waveformMeta">128 SAMPLES</span>
+          </div>
+
+          <div class="waveform-header-row">
+            <div class="card__title" style="margin-bottom: 0;">
+              <span class="card__title-prefix">&gt;&gt;</span>
+              <span>TELEMETRY TRACE</span>
+            </div>
+            <div class="waveform-tabs" role="tablist">
+              <button class="waveform-tab active" data-view="iq" type="button" role="tab" aria-selected="true">&gt; I / Q</button>
+              <button class="waveform-tab" data-view="magnitude" type="button" role="tab" aria-selected="false">&gt; MAGNITUDE</button>
+              <button class="waveform-tab" data-view="phase" type="button" role="tab" aria-selected="false">&gt; PHASE</button>
+            </div>
+          </div>
+
+          <div class="waveform-canvas-wrapper">
+            <div class="radar-crosshair" aria-hidden="true"></div>
+            <canvas id="signalChart"></canvas>
+          </div>
+        </div>
+      </section>
+
+      <!-- ═══════════════════════════════════════════════════════════
+           RESULTS PANEL
+      ═══════════════════════════════════════════════════════════ -->
+      <section class="results-section" id="resultsSection" aria-label="Analysis Results">
+        <div class="results-grid">
+
+          <!-- Card 1: SNR Region Estimation -->
+          <div class="cyber-card">
+            <div class="terminal-bar">
+              <div class="terminal-dots" aria-hidden="true">
+                <span class="t-dot t-dot--red"></span>
+                <span class="t-dot t-dot--yellow"></span>
+                <span class="t-dot t-dot--green"></span>
+              </div>
+              <span class="terminal-title">STAGE_01 // SNR REGION</span>
+              <span class="terminal-tag" id="snrStatusTag">[ESTIMATED]</span>
+            </div>
+
+            <div class="card__title">
+              <span class="card__title-prefix">&gt;&gt;</span>
+              <span>PREDICTED SNR REGIME</span>
+            </div>
+
+            <div class="snr-badge snr-badge--high" id="rSnrClass">&mdash;</div>
+            <div class="snr-confidence" id="rSnrConf">CONFIDENCE: &mdash;</div>
+
+            <div class="hud-label">CONFIDENCE DISTRIBUTION</div>
+            <div class="snr-probs" id="snrProbs">
+              <!-- Populated dynamically via JS -->
+            </div>
+          </div>
+
+          <!-- Card 2: Modulation Type Classification -->
+          <div class="cyber-card">
+            <div class="terminal-bar">
+              <div class="terminal-dots" aria-hidden="true">
+                <span class="t-dot t-dot--red"></span>
+                <span class="t-dot t-dot--yellow"></span>
+                <span class="t-dot t-dot--green"></span>
+              </div>
+              <span class="terminal-title">STAGE_02 // MODULATION TYPE</span>
+              <span class="terminal-tag" id="amcStatusTag">[CLASSIFIED]</span>
+            </div>
+
+            <div class="card__title">
+              <span class="card__title-prefix">&gt;&gt;</span>
+              <span>IDENTIFIED MODULATION</span>
+            </div>
+
+            <!-- Online Result State -->
+            <div id="modOnlineContent">
+              <div class="mod-class" id="rModulation">&mdash;</div>
+              <div class="mod-confidence" id="rConf">CONFIDENCE: &mdash;</div>
+
+              <div class="hud-label">TARGET CONFIDENCE LEVEL</div>
+              <div class="mod-confidence-bar">
+                <div class="mod-confidence-bar__fill" id="rConfBar" style="width: 0%"></div>
+              </div>
+
+              <div class="hud-label" style="margin-top: var(--space-md);">CLASS PROBABILITIES</div>
+              <div class="snr-probs" id="probaBars">
+                <!-- Populated dynamically via JS -->
+              </div>
+            </div>
+
+            <!-- Offline Expert Model State -->
+            <div class="mod-not-available" id="modNotAvailable" style="display: none;">
+              <div class="mod-not-available__icon">⚠️</div>
+              <div class="mod-not-available__title">EXPERT MODEL OFFLINE</div>
+              <p id="modNotAvailableText">No AMC expert model is currently available for this SNR region.</p>
+            </div>
+
+          </div>
+
+        </div>
+      </section>
+
+    </main>
+
+    <!-- ═══════════════════════════════════════════════════════════
+         FOOTER
+    ═══════════════════════════════════════════════════════════ -->
+    <footer class="footer" role="contentinfo">
+      <div class="footer__line">
+        <span class="footer__brand">AMC // SNR-AWARE AUTOMATIC MODULATION CLASSIFIER</span>
+        <span class="footer__status" id="backendStatus">SYS_STATUS: ONLINE (PORT 8000)</span>
+      </div>
+    </footer>
+
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       LIVE SDR HARDWARE MODAL
+  ═══════════════════════════════════════════════════════════ -->
+  <div class="modal-backdrop" id="sdrModal" role="dialog" aria-modal="true" aria-labelledby="sdrModalTitle">
+    <div class="modal cyber-chamfer">
+      <div class="modal__icon">📡</div>
+      <h3 class="modal__heading" id="sdrModalTitle">LIVE SDR INTERFACE REQUIRED</h3>
+      <p class="modal__body">
+        Live real-time RF capture requires dedicated Software Defined Radio hardware (e.g. <span class="cyber-highlight">RTL-SDR v4, HackRF One, ADALM-PLUTO</span>).
+        <br /><br />
+        Please ingest sampled <span class="cyber-highlight">.NPY</span> signal files for file-based deep learning inference.
+      </p>
+      <button class="btn-cyber modal__close" id="closeSdrModalBtn" type="button">CLOSE INTERFACE</button>
+    </div>
+  </div>
+
+  <!-- Toast Notification System -->
+  <div class="toast" id="toast" role="alert" aria-live="assertive"></div>
+
+  <!-- Frontend Controller Script -->
+  <script src="js/app.js"></script>
+</body>
+</html>
