@@ -33,12 +33,20 @@ from fastapi import FastAPI, HTTPException, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, field_validator
 
-from preprocessing import (
-    preprocess_for_snr,
-    preprocess_for_high_snr_amc,
-    preprocess_for_medium_snr_amc,
-    SIGNAL_LENGTH,
-)
+try:
+    from .preprocessing import (
+        preprocess_for_snr,
+        preprocess_for_high_snr_amc,
+        preprocess_for_medium_snr_amc,
+        SIGNAL_LENGTH,
+    )
+except ImportError:
+    from preprocessing import (
+        preprocess_for_snr,
+        preprocess_for_high_snr_amc,
+        preprocess_for_medium_snr_amc,
+        SIGNAL_LENGTH,
+    )
 
 # ---------------------------------------------------------------------------
 # Logging
