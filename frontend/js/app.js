@@ -17,7 +17,21 @@
 /* ═══════════════════════════════════════════════════════════════════════════
    1. CONFIGURATION
    ═══════════════════════════════════════════════════════════════════════════ */
-const API_BASE_URL = 'http://127.0.0.1:8000'; // Change to '' if served directly by FastAPI
+function resolveApiBaseUrl() {
+  const configured = window && window.__API_BASE_URL__;
+  if (typeof configured === 'string' && configured.trim()) {
+    return configured.trim().replace(/\/+$/, '');
+  }
+
+  const host = (window && window.location && window.location.hostname) || '';
+  if (host === 'localhost' || host === '127.0.0.1') {
+    return 'http://127.0.0.1:8000';
+  }
+
+  return 'https://wavemind.onrender.com';
+}
+
+const API_BASE_URL = resolveApiBaseUrl();
 const SIGNAL_LENGTH = 128;                   // Expected samples per channel (2 × 128)
 
 /* ═══════════════════════════════════════════════════════════════════════════
@@ -479,7 +493,7 @@ async function runPrediction() {
   formData.append('file', state.file);
 
   try {
-    const endpoint = `${API_BASE_URL}/predict`;
+    const endpoint = `${API_BASE_URL.replace(/\/+$/, '')}/predict`;
     const res = await fetch(endpoint, {
       method: 'POST',
       body: formData,
@@ -644,10 +658,11 @@ function renderAllClassProbabilities(allProbs, winnerClass) {
 
 async function checkBackendHealth() {
   try {
-    const res = await fetch(`${API_BASE_URL}/health`);
+    const healthUrl = `${API_BASE_URL.replace(/\/+$/, '')}/health`;
+    const res = await fetch(healthUrl);
     if (res.ok) {
       dom.statusBadge.textContent = 'SYS.ONLINE // AI_SIGINT_V1.0';
-      dom.backendStatus.textContent = 'SYS_STATUS: ONLINE (PORT 8000)';
+      dom.backendStatus.textContent = `SYS_STATUS: ONLINE (${API_BASE_URL})`;
       dom.statusDot.style.background = 'var(--accent)';
       dom.statusDot.style.boxShadow = '0 0 8px var(--accent)';
     } else {
@@ -655,7 +670,7 @@ async function checkBackendHealth() {
     }
   } catch (_) {
     dom.statusBadge.textContent = 'SYS.OFFLINE // CONNECT ERROR';
-    dom.backendStatus.textContent = 'SYS_STATUS: OFFLINE (PORT 8000)';
+    dom.backendStatus.textContent = `SYS_STATUS: OFFLINE (${API_BASE_URL})`;
     dom.statusDot.style.background = 'var(--destructive)';
     dom.statusDot.style.boxShadow = '0 0 8px var(--destructive)';
   }
