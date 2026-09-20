@@ -265,18 +265,17 @@ async def predict_unified(file: UploadFile = File(...)):
     }
 
     # Step 2: Route to AMC Expert Model
+    # NOTE: The medium AMC model covers SNR down to 0 dB, so both "medium"
+    # and "low" SNR classes are handled by medium_amc. The SNR classifier
+    # output is preserved as-is — only the AMC routing changes.
     amc_model = None
     preprocess_fn = None
     if snr_label == "high":
         amc_model = models["high_amc"]
         preprocess_fn = preprocess_for_high_snr_amc
-    elif snr_label == "medium":
+    else:  # "medium" or "low" — both routed to the medium AMC model
         amc_model = models["medium_amc"]
         preprocess_fn = preprocess_for_medium_snr_amc
-    elif snr_label == "low":
-        amc_model = models["low_amc"]
-        # If low model exists, use corresponding preprocess; otherwise None
-        preprocess_fn = preprocess_for_medium_snr_amc if amc_model else None
 
     modulation_available = (amc_model is not None)
     modulation_class = None
@@ -367,15 +366,14 @@ def predict_amc(body: SignalInput):
         raise HTTPException(status_code=500, detail="SNR estimation step failed.")
 
     # Step 2: Route to AMC model
+    # NOTE: The medium AMC model covers SNR down to 0 dB, so both "medium"
+    # and "low" SNR classes are handled by medium_amc. The SNR classifier
+    # output is preserved as-is — only the AMC routing changes.
     if snr_class == "high":
         amc_model = models["high_amc"]
         preprocess_fn = preprocess_for_high_snr_amc
-    elif snr_class == "medium":
+    else:  # "medium" or "low" — both routed to the medium AMC model
         amc_model = models["medium_amc"]
-        preprocess_fn = preprocess_for_medium_snr_amc
-    else:
-        # Fallback to medium if low-SNR model not present
-        amc_model = models["low_amc"] or models["medium_amc"]
         preprocess_fn = preprocess_for_medium_snr_amc
 
     try:
