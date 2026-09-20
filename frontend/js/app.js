@@ -1,83 +1,43 @@
-/**
- * app.js — SNR-Aware Automatic Modulation Classification System
- * ─────────────────────────────────────────────────────────────────────────────
- * Connects the cyberpunk HUD frontend to the FastAPI deep learning backend.
- *
- * Core Capabilities:
- *   1. Client-side binary .npy validation and header parsing
- *   2. Instant I/Q, Magnitude, and Phase telemetry oscillogram rendering
- *   3. Multipart/Form-Data signal transmission to the unified /predict endpoint
- *   4. Dynamic SNR region badge & probability distribution rendering
- *   5. Modulation classification with expert-model availability fallback
- *   6. Toast notification system & SDR hardware modal management
- */
+﻿'use strict';
 
-'use strict';
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   1. CONFIGURATION
-   ═══════════════════════════════════════════════════════════════════════════ */
-function resolveApiBaseUrl() {
-  const configured = window && window.__API_BASE_URL__;
-  if (typeof configured === 'string' && configured.trim()) {
-    return configured.trim().replace(/\/+$/, '');
+const API_BASE_URL = (() => {
+  if (window.__API_BASE_URL__ && typeof window.__API_BASE_URL__ === 'string' && window.__API_BASE_URL__.trim()) {
+    return window.__API_BASE_URL__.trim().replace(/\/+$/, '');
   }
-
-  const host = (window && window.location && window.location.hostname) || '';
-  if (host === 'localhost' || host === '127.0.0.1') {
-    return 'http://127.0.0.1:8000';
-  }
-
   return 'https://wavemind.onrender.com';
-}
+})();
 
-const API_BASE_URL = resolveApiBaseUrl();
-const SIGNAL_LENGTH = 128;                   // Expected samples per channel (2 × 128)
+const SIGNAL_LENGTH = 128;
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   2. APPLICATION STATE
-   ═══════════════════════════════════════════════════════════════════════════ */
 const state = {
-  file: null,              // Selected .npy File object
-  iChannel: null,          // Float32Array of In-phase samples (128)
-  qChannel: null,          // Float32Array of Quadrature samples (128)
-  magnitude: null,         // Float32Array of sqrt(I^2 + Q^2)
-  phase: null,             // Float32Array of atan2(Q, I) in degrees
-  activeView: 'iq',        // Active oscillogram tab: 'iq' | 'magnitude' | 'phase'
-  chartInstance: null,     // Chart.js instance
-  isPredicting: false,     // Prediction request in-flight flag
+  file: null,
+  iChannel: null,
+  qChannel: null,
+  magnitude: null,
+  phase: null,
+  activeView: 'iq',
+  chartInstance: null,
+  isPredicting: false,
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   3. DOM REFERENCES
-   ═══════════════════════════════════════════════════════════════════════════ */
 const dom = {
-  // Upload Zone
   dropZone: document.getElementById('dropZone'),
   fileInput: document.getElementById('fileInput'),
   fileInfo: document.getElementById('fileInfo'),
   fileName: document.getElementById('fileName'),
   fileMeta: document.getElementById('fileMeta'),
   removeFileBtn: document.getElementById('removeFileBtn'),
-
-  // Action Buttons
   predictBtn: document.getElementById('predictBtn'),
   predictLabel: document.getElementById('predictLabel'),
   sdrBtn: document.getElementById('sdrBtn'),
-
-  // Oscilloscope
   waveformSection: document.getElementById('waveformSection'),
   waveformMeta: document.getElementById('waveformMeta'),
   signalChart: document.getElementById('signalChart'),
   waveformTabs: document.querySelectorAll('.waveform-tab'),
-
-  // Results — Stage 1 (SNR)
   resultsSection: document.getElementById('resultsSection'),
   rSnrClass: document.getElementById('rSnrClass'),
   rSnrConf: document.getElementById('rSnrConf'),
   snrProbs: document.getElementById('snrProbs'),
-
-  // Results — Stage 2 (Modulation)
   modOnlineContent: document.getElementById('modOnlineContent'),
   modNotAvailable: document.getElementById('modNotAvailable'),
   modNotAvailableText: document.getElementById('modNotAvailableText'),
@@ -85,8 +45,6 @@ const dom = {
   rConf: document.getElementById('rConf'),
   rConfBar: document.getElementById('rConfBar'),
   probaBars: document.getElementById('probaBars'),
-
-  // Modal & Status
   sdrModal: document.getElementById('sdrModal'),
   closeSdrModalBtn: document.getElementById('closeSdrModalBtn'),
   statusDot: document.getElementById('statusDot'),
@@ -95,35 +53,50 @@ const dom = {
   toast: document.getElementById('toast'),
 };
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   4. TOAST NOTIFICATION SYSTEM
-   ═══════════════════════════════════════════════════════════════════════════ */
 let toastTimeout = null;
 
 function showToast(message, type = 'error') {
   if (!dom.toast) return;
   clearTimeout(toastTimeout);
-
   dom.toast.textContent = message;
-  dom.toast.className = `toast visible ${type === 'success' ? 'toast--success' : 'toast--error'}`;
-
+  dom.toast.className = 'toast visible ' + (type === 'success' ? 'toast--success' : 'toast--error');
   toastTimeout = setTimeout(() => {
     dom.toast.classList.remove('visible');
-  }, 4000);
+  }, 5000);
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   5. CLIENT-SIDE NUMPY (.NPY) BINARY PARSER & VALIDATION
-   ═══════════════════════════════════════════════════════════════════════════ */
+function fetchWithTimeout(url, options, timeoutMs) {
+  options = options || {};
+  timeoutMs = timeoutMs || 90000;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeoutMs);
+  return fetch(url, Object.assign({}, options, { signal: controller.signal }))
+    .finally(() => clearTimeout(timer));
+}
 
-/**
- * Parses raw .npy ArrayBuffer according to the NumPy binary format specification.
- * Extracts array shape, dtype, and typed data buffer.
- */
+function setStatusWakingUp() {
+  dom.statusBadge.textContent = 'SYS.WAKING // RENDER COLD START...';
+  dom.backendStatus.textContent = 'SYS_STATUS: WAKING UP - PLEASE WAIT (~30s)';
+  dom.statusDot.style.background = '#ffaa00';
+  dom.statusDot.style.boxShadow = '0 0 8px #ffaa00';
+}
+
+function setStatusOnline() {
+  dom.statusBadge.textContent = 'SYS.ONLINE // AI_SIGINT_V1.0';
+  dom.backendStatus.textContent = 'SYS_STATUS: ONLINE (' + API_BASE_URL + ')';
+  dom.statusDot.style.background = 'var(--accent)';
+  dom.statusDot.style.boxShadow = '0 0 8px var(--accent)';
+}
+
+function setStatusOffline() {
+  dom.statusBadge.textContent = 'SYS.OFFLINE // CONNECT ERROR';
+  dom.backendStatus.textContent = 'SYS_STATUS: OFFLINE (' + API_BASE_URL + ')';
+  dom.statusDot.style.background = 'var(--destructive)';
+  dom.statusDot.style.boxShadow = '0 0 8px var(--destructive)';
+}
+
 function parseNpyBuffer(buffer) {
   const bytes = new Uint8Array(buffer);
-
-  // Validate magic prefix: \x93NUMPY
   const MAGIC = [0x93, 0x4e, 0x55, 0x4d, 0x50, 0x59];
   for (let i = 0; i < MAGIC.length; i++) {
     if (bytes[i] !== MAGIC[i]) {
@@ -144,14 +117,14 @@ function parseNpyBuffer(buffer) {
     headerLen = view.getUint32(8, true);
     dataOffset = 12 + headerLen;
   } else {
-    throw new Error(`Unsupported .npy version ${majorVersion}`);
+    throw new Error('Unsupported .npy version ' + majorVersion);
   }
 
+  const headerStart = majorVersion === 1 ? 10 : 12;
   const decoder = new TextDecoder('utf-8');
-  const headerBytes = bytes.slice(majorVersion === 1 ? 10 : 12, (majorVersion === 1 ? 10 : 12) + headerLen);
+  const headerBytes = bytes.slice(headerStart, headerStart + headerLen);
   const headerStr = decoder.decode(headerBytes).trim();
 
-  // Extract dtype
   const dtypeMatch = headerStr.match(/'descr'\s*:\s*'([^']+)'/);
   if (!dtypeMatch) throw new Error('Cannot locate dtype descriptor in .npy header.');
   const rawDtype = dtypeMatch[1];
@@ -160,24 +133,23 @@ function parseNpyBuffer(buffer) {
   const isLittleEndian = (rawDtype[0] === '<' || rawDtype[0] === '=' || rawDtype[0] === '|');
 
   if (typeChar !== 'f' || (byteSize !== 4 && byteSize !== 8)) {
-    throw new Error(`Unsupported dtype '${rawDtype}'. Only float32 or float64 arrays are accepted.`);
+    throw new Error('Unsupported dtype ' + rawDtype + '. Only float32 or float64 arrays are accepted.');
   }
 
-  // Extract shape
   const shapeMatch = headerStr.match(/'shape'\s*:\s*\(([^)]*)\)/);
   if (!shapeMatch) throw new Error('Cannot locate shape in .npy header.');
   const shapeStr = shapeMatch[1].trim();
   const shape = shapeStr
-    ? shapeStr.split(',').map(s => parseInt(s.trim(), 10)).filter(n => !isNaN(n))
+    ? shapeStr.split(',').map(function(s) { return parseInt(s.trim(), 10); }).filter(function(n) { return !isNaN(n); })
     : [];
 
   const totalElements = shape.length > 0
-    ? shape.reduce((a, b) => a * b, 1)
+    ? shape.reduce(function(a, b) { return a * b; }, 1)
     : (buffer.byteLength - dataOffset) / byteSize;
 
   const dataBuffer = buffer.slice(dataOffset, dataOffset + totalElements * byteSize);
-
   let data;
+
   if (byteSize === 4) {
     if (isLittleEndian) {
       data = new Float32Array(dataBuffer);
@@ -189,7 +161,6 @@ function parseNpyBuffer(buffer) {
       }
     }
   } else {
-    // Float64 → convert to Float32
     const view = new DataView(dataBuffer);
     data = new Float32Array(totalElements);
     for (let i = 0; i < totalElements; i++) {
@@ -197,40 +168,21 @@ function parseNpyBuffer(buffer) {
     }
   }
 
-  return { data, shape, dtype: rawDtype };
+  return { data: data, shape: shape, dtype: rawDtype };
 }
 
-/**
- * Extracts canonical I and Q channels (each 128 samples).
- */
 function extractChannels(data, shape) {
-  const SL = SIGNAL_LENGTH; // 128
+  const SL = SIGNAL_LENGTH;
 
-  // (2, 128)
   if (shape.length === 2 && shape[0] === 2 && shape[1] === SL) {
-    return {
-      iChannel: data.slice(0, SL),
-      qChannel: data.slice(SL, 2 * SL),
-    };
+    return { iChannel: data.slice(0, SL), qChannel: data.slice(SL, 2 * SL) };
   }
-
-  // (1, 2, 128)
   if (shape.length === 3 && shape[0] === 1 && shape[1] === 2 && shape[2] === SL) {
-    return {
-      iChannel: data.slice(0, SL),
-      qChannel: data.slice(SL, 2 * SL),
-    };
+    return { iChannel: data.slice(0, SL), qChannel: data.slice(SL, 2 * SL) };
   }
-
-  // (256,)
   if (shape.length === 1 && shape[0] === 2 * SL) {
-    return {
-      iChannel: data.slice(0, SL),
-      qChannel: data.slice(SL, 2 * SL),
-    };
+    return { iChannel: data.slice(0, SL), qChannel: data.slice(SL, 2 * SL) };
   }
-
-  // (128, 2)
   if (shape.length === 2 && shape[0] === SL && shape[1] === 2) {
     const iCh = new Float32Array(SL);
     const qCh = new Float32Array(SL);
@@ -241,23 +193,18 @@ function extractChannels(data, shape) {
     return { iChannel: iCh, qChannel: qCh };
   }
 
-  throw new Error(`Unexpected tensor shape (${shape.join(', ')}). Model requires 2 × 128 I/Q floats.`);
+  throw new Error('Unexpected tensor shape (' + shape.join(', ') + '). Model requires 2 x 128 I/Q floats.');
 }
 
 function formatBytes(bytes) {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 ** 2) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / 1024 ** 2).toFixed(2)} MB`;
+  if (bytes < 1024) return bytes + ' B';
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return (bytes / (1024 * 1024)).toFixed(2) + ' MB';
 }
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   6. FILE SELECTION & INGESTION
-   ═══════════════════════════════════════════════════════════════════════════ */
 
 async function handleFileSelection(file) {
   if (!file) return;
 
-  // Strict .npy extension validation
   if (!file.name.toLowerCase().endsWith('.npy')) {
     showToast('INVALID FILE TYPE. ONLY .NPY SIGNAL FILES ARE ACCEPTED.', 'error');
     return;
@@ -265,47 +212,42 @@ async function handleFileSelection(file) {
 
   try {
     const buffer = await file.arrayBuffer();
-    const { data, shape, dtype } = parseNpyBuffer(buffer);
-    const { iChannel, qChannel } = extractChannels(data, shape);
+    const parsed = parseNpyBuffer(buffer);
+    const channels = extractChannels(parsed.data, parsed.shape);
+    const iChannel = channels.iChannel;
+    const qChannel = channels.qChannel;
 
-    // Compute Derived Telemetry Signals: Magnitude & Phase
     const magnitude = new Float32Array(SIGNAL_LENGTH);
     const phase = new Float32Array(SIGNAL_LENGTH);
 
     for (let k = 0; k < SIGNAL_LENGTH; k++) {
-      const i = iChannel[k];
-      const q = qChannel[k];
-      magnitude[k] = Math.sqrt(i * i + q * q);
-      phase[k] = Math.atan2(q, i) * (180 / Math.PI); // Phase in degrees [-180, +180]
+      const iv = iChannel[k];
+      const qv = qChannel[k];
+      magnitude[k] = Math.sqrt(iv * iv + qv * qv);
+      phase[k] = Math.atan2(qv, iv) * (180 / Math.PI);
     }
 
-    // Save to State
     state.file = file;
     state.iChannel = iChannel;
     state.qChannel = qChannel;
     state.magnitude = magnitude;
     state.phase = phase;
 
-    // Update File Preview HUD
     dom.fileName.textContent = file.name;
-    dom.fileMeta.textContent = `SHAPE: (${shape.join(', ')}) | DTYPE: ${dtype} | SIZE: ${formatBytes(file.size)}`;
+    dom.fileMeta.textContent = 'SHAPE: (' + parsed.shape.join(', ') + ') | DTYPE: ' + parsed.dtype + ' | SIZE: ' + formatBytes(file.size);
     dom.fileInfo.classList.add('visible');
 
-    // Enable Execute Button
     dom.predictBtn.disabled = false;
     dom.predictBtn.setAttribute('aria-disabled', 'false');
 
-    // Render Waveform Oscillogram
     renderWaveform();
     dom.waveformSection.classList.add('visible');
-
-    // Reset previous prediction results until user executes
     dom.resultsSection.classList.remove('visible');
 
-    showToast(`SIGNAL TELEMETRY LOADED: ${file.name}`, 'success');
+    showToast('SIGNAL TELEMETRY LOADED: ' + file.name, 'success');
 
   } catch (err) {
-    showToast(`INVALID NPY SIGNAL DATA — ${err.message}`, 'error');
+    showToast('INVALID NPY SIGNAL DATA - ' + err.message, 'error');
     clearFile();
   }
 }
@@ -330,21 +272,17 @@ function clearFile() {
   }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   7. WAVEFORM OSCILLOGRAM (Chart.js)
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 function renderWaveform() {
   if (!state.iChannel || !state.qChannel || !dom.signalChart) return;
 
-  const labels = Array.from({ length: SIGNAL_LENGTH }, (_, i) => i);
+  const labels = Array.from({ length: SIGNAL_LENGTH }, function(_, i) { return i; });
   let datasets = [];
   let yAxisLabel = 'NORM. AMPLITUDE';
   let yMin = undefined;
   let yMax = undefined;
 
   if (state.activeView === 'iq') {
-    dom.waveformMeta.textContent = `${SIGNAL_LENGTH} SAMPLES // DUAL I/Q CHANNEL`;
+    dom.waveformMeta.textContent = SIGNAL_LENGTH + ' SAMPLES // DUAL I/Q CHANNEL';
     datasets = [
       {
         label: 'I (In-Phase)',
@@ -368,7 +306,7 @@ function renderWaveform() {
       },
     ];
   } else if (state.activeView === 'magnitude') {
-    dom.waveformMeta.textContent = `${SIGNAL_LENGTH} SAMPLES // ENVELOPE MAGNITUDE √(I² + Q²)`;
+    dom.waveformMeta.textContent = SIGNAL_LENGTH + ' SAMPLES // ENVELOPE MAGNITUDE';
     yAxisLabel = 'MAGNITUDE |r|';
     datasets = [
       {
@@ -383,13 +321,13 @@ function renderWaveform() {
       },
     ];
   } else if (state.activeView === 'phase') {
-    dom.waveformMeta.textContent = `${SIGNAL_LENGTH} SAMPLES // INSTANTANEOUS PHASE ∠θ (DEGREES)`;
+    dom.waveformMeta.textContent = SIGNAL_LENGTH + ' SAMPLES // INSTANTANEOUS PHASE (DEGREES)';
     yAxisLabel = 'PHASE (DEGREES)';
     yMin = -190;
     yMax = 190;
     datasets = [
       {
-        label: 'Phase θ (°)',
+        label: 'Phase (deg)',
         data: Array.from(state.phase),
         borderColor: '#ffaa00',
         backgroundColor: 'rgba(255, 170, 0, 0.08)',
@@ -408,15 +346,12 @@ function renderWaveform() {
   const ctx = dom.signalChart.getContext('2d');
   state.chartInstance = new Chart(ctx, {
     type: 'line',
-    data: { labels, datasets },
+    data: { labels: labels, datasets: datasets },
     options: {
       responsive: true,
       maintainAspectRatio: false,
       animation: { duration: 350 },
-      interaction: {
-        mode: 'index',
-        intersect: false,
-      },
+      interaction: { mode: 'index', intersect: false },
       plugins: {
         legend: {
           display: true,
@@ -436,49 +371,28 @@ function renderWaveform() {
           titleFont: { family: "'Share Tech Mono', monospace" },
           bodyFont: { family: "'JetBrains Mono', monospace" },
           callbacks: {
-            title: items => `SAMPLE: ${items[0].label}`,
-            label: item => ` ${item.dataset.label}: ${item.raw.toFixed(4)}`,
+            title: function(items) { return 'SAMPLE: ' + items[0].label; },
+            label: function(item) { return ' ' + item.dataset.label + ': ' + item.raw.toFixed(4); },
           },
         },
       },
       scales: {
         x: {
-          title: {
-            display: true,
-            text: 'TIME INDEX (k)',
-            color: '#6b7280',
-            font: { family: "'Share Tech Mono', monospace", size: 11 },
-          },
-          ticks: {
-            color: '#6b7280',
-            font: { family: "'JetBrains Mono', monospace", size: 9 },
-            maxTicksLimit: 16,
-          },
+          title: { display: true, text: 'TIME INDEX (k)', color: '#6b7280', font: { family: "'Share Tech Mono', monospace", size: 11 } },
+          ticks: { color: '#6b7280', font: { family: "'JetBrains Mono', monospace", size: 9 }, maxTicksLimit: 16 },
           grid: { color: 'rgba(42, 42, 58, 0.4)' },
         },
         y: {
           min: yMin,
           max: yMax,
-          title: {
-            display: true,
-            text: yAxisLabel,
-            color: '#6b7280',
-            font: { family: "'Share Tech Mono', monospace", size: 11 },
-          },
-          ticks: {
-            color: '#6b7280',
-            font: { family: "'JetBrains Mono', monospace", size: 9 },
-          },
+          title: { display: true, text: yAxisLabel, color: '#6b7280', font: { family: "'Share Tech Mono', monospace", size: 11 } },
+          ticks: { color: '#6b7280', font: { family: "'JetBrains Mono', monospace", size: 9 } },
           grid: { color: 'rgba(42, 42, 58, 0.4)' },
         },
       },
     },
   });
 }
-
-/* ═══════════════════════════════════════════════════════════════════════════
-   8. BACKEND API PREDICTION PIPELINE
-   ═══════════════════════════════════════════════════════════════════════════ */
 
 async function runPrediction() {
   if (state.isPredicting || !state.file) return;
@@ -488,19 +402,18 @@ async function runPrediction() {
   dom.predictBtn.disabled = true;
   dom.predictLabel.textContent = 'ANALYZING SIGNAL...';
 
-  // Build FormData with the actual .npy file
+  setStatusWakingUp();
+  showToast('CONNECTING TO BACKEND - MAY TAKE UP TO 30s ON COLD START...', 'error');
+
   const formData = new FormData();
   formData.append('file', state.file);
 
   try {
-    const endpoint = `${API_BASE_URL.replace(/\/+$/, '')}/predict`;
-    const res = await fetch(endpoint, {
-      method: 'POST',
-      body: formData,
-    });
+    const endpoint = API_BASE_URL.replace(/\/+$/, '') + '/predict';
+    const res = await fetchWithTimeout(endpoint, { method: 'POST', body: formData }, 90000);
 
     if (!res.ok) {
-      let errDetail = `HTTP ${res.status}`;
+      let errDetail = 'HTTP ' + res.status;
       try {
         const errJson = await res.json();
         errDetail = errJson.detail || errDetail;
@@ -509,15 +422,22 @@ async function runPrediction() {
     }
 
     const data = await res.json();
+    setStatusOnline();
     renderResults(data);
     showToast('PREDICTION EXECUTED SUCCESSFULLY', 'success');
 
   } catch (err) {
-    const msg = err.message || 'Unknown network error';
-    if (msg.includes('Failed to fetch') || msg.includes('NetworkError')) {
-      showToast('[ERROR] BACKEND CONNECTION FAILED — Is the server running at ' + API_BASE_URL + '?', 'error');
+    setStatusOffline();
+    if (err.name === 'AbortError') {
+      showToast('[ERROR] REQUEST TIMED OUT - BACKEND DID NOT RESPOND IN 90s. TRY AGAIN.', 'error');
+    } else if (
+      err.message.indexOf('Failed to fetch') !== -1 ||
+      err.message.indexOf('NetworkError') !== -1 ||
+      err.message.indexOf('Load failed') !== -1
+    ) {
+      showToast('[ERROR] BACKEND UNREACHABLE - CHECK https://wavemind.onrender.com IS DEPLOYED.', 'error');
     } else {
-      showToast(`[ERROR] ${msg.toUpperCase()}`, 'error');
+      showToast('[ERROR] ' + err.message.toUpperCase(), 'error');
     }
   } finally {
     state.isPredicting = false;
@@ -527,33 +447,25 @@ async function runPrediction() {
   }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   9. RESULTS RENDERING
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 function renderResults(data) {
-  // ── Stage 1: SNR Region ──
   const snrCategory = (data.snr_category || 'UNKNOWN').toUpperCase();
   const snrConfidence = data.snr_confidence !== undefined ? data.snr_confidence : 0;
   const snrPct = (snrConfidence * 100).toFixed(1);
 
-  dom.rSnrClass.textContent = `${snrCategory} SNR`;
-  dom.rSnrConf.textContent = `CONFIDENCE: ${snrPct}%`;
+  dom.rSnrClass.textContent = snrCategory + ' SNR';
+  dom.rSnrConf.textContent = 'CONFIDENCE: ' + snrPct + '%';
 
-  // Badge class adjustment
   dom.rSnrClass.className = 'snr-badge';
-  if (snrCategory.includes('HIGH')) {
+  if (snrCategory.indexOf('HIGH') !== -1) {
     dom.rSnrClass.classList.add('snr-badge--high');
-  } else if (snrCategory.includes('MED')) {
+  } else if (snrCategory.indexOf('MED') !== -1) {
     dom.rSnrClass.classList.add('snr-badge--medium');
   } else {
     dom.rSnrClass.classList.add('snr-badge--low');
   }
 
-  // Render SNR Probability Distribution
   renderSnrProbabilities(data.snr_probabilities || {});
 
-  // ── Stage 2: Modulation Type ──
   const isAvailable = data.modulation_available === true;
 
   if (isAvailable && data.modulation_class) {
@@ -565,26 +477,22 @@ function renderResults(data) {
     const modPct = (modConf * 100).toFixed(1);
 
     dom.rModulation.textContent = modClass;
-    dom.rConf.textContent = `CONFIDENCE: ${modPct}%`;
+    dom.rConf.textContent = 'CONFIDENCE: ' + modPct + '%';
 
-    // Reset and animate confidence bar
     dom.rConfBar.style.width = '0%';
-    setTimeout(() => {
-      dom.rConfBar.style.width = `${Math.min(modConf * 100, 100)}%`;
+    setTimeout(function() {
+      dom.rConfBar.style.width = Math.min(modConf * 100, 100) + '%';
     }, 100);
 
-    // Render all class probabilities
     renderAllClassProbabilities(data.all_probabilities || {}, modClass);
 
   } else {
-    // Model not available for this SNR region (e.g. Low SNR offline)
     dom.modOnlineContent.style.display = 'none';
     dom.modNotAvailable.style.display = 'block';
     dom.modNotAvailableText.textContent =
-      data.message || `No AMC expert model is currently available for this SNR region (${snrCategory} SNR).`;
+      data.message || 'No AMC expert model is currently available for this SNR region (' + snrCategory + ' SNR).';
   }
 
-  // Reveal results section and scroll into view smoothly
   dom.resultsSection.classList.add('visible');
   dom.resultsSection.scrollIntoView({ behavior: 'smooth', block: 'start' });
 }
@@ -593,30 +501,28 @@ function renderSnrProbabilities(probs) {
   dom.snrProbs.innerHTML = '';
 
   const regions = [
-    { key: 'HIGH',   label: 'HIGH',   val: probs.HIGH   !== undefined ? probs.HIGH   : 0, cls: 'high' },
-    { key: 'MEDIUM', label: 'MEDIUM', val: probs.MEDIUM !== undefined ? probs.MEDIUM : 0, cls: 'medium' },
-    { key: 'LOW',    label: 'LOW',    val: probs.LOW    !== undefined ? probs.LOW    : 0, cls: 'low' },
+    { label: 'HIGH',   val: probs.HIGH   !== undefined ? probs.HIGH   : 0, cls: 'high' },
+    { label: 'MEDIUM', val: probs.MEDIUM !== undefined ? probs.MEDIUM : 0, cls: 'medium' },
+    { label: 'LOW',    val: probs.LOW    !== undefined ? probs.LOW    : 0, cls: 'low' },
   ];
 
-  regions.forEach(region => {
+  regions.forEach(function(region) {
     const pct = (region.val * 100).toFixed(1);
     const row = document.createElement('div');
     row.className = 'snr-prob-bar';
-    row.innerHTML = `
-      <span class="snr-prob-bar__label">${region.label}</span>
-      <div class="snr-prob-bar__track">
-        <div class="snr-prob-bar__fill snr-prob-bar__fill--${region.cls}" style="width:0%" data-target="${pct}"></div>
-      </div>
-      <span class="snr-prob-bar__value">${pct}%</span>
-    `;
+    row.innerHTML =
+      '<span class="snr-prob-bar__label">' + region.label + '</span>' +
+      '<div class="snr-prob-bar__track">' +
+        '<div class="snr-prob-bar__fill snr-prob-bar__fill--' + region.cls + '" style="width:0%" data-target="' + pct + '"></div>' +
+      '</div>' +
+      '<span class="snr-prob-bar__value">' + pct + '%</span>';
     dom.snrProbs.appendChild(row);
   });
 
-  // Animate width transition
-  requestAnimationFrame(() => {
-    setTimeout(() => {
-      dom.snrProbs.querySelectorAll('.snr-prob-bar__fill').forEach(bar => {
-        bar.style.width = `${bar.dataset.target}%`;
+  requestAnimationFrame(function() {
+    setTimeout(function() {
+      dom.snrProbs.querySelectorAll('.snr-prob-bar__fill').forEach(function(bar) {
+        bar.style.width = bar.dataset.target + '%';
       });
     }, 100);
   });
@@ -624,82 +530,66 @@ function renderSnrProbabilities(probs) {
 
 function renderAllClassProbabilities(allProbs, winnerClass) {
   dom.probaBars.innerHTML = '';
-  const sorted = Object.entries(allProbs).sort((a, b) => b[1] - a[1]);
+  const sorted = Object.entries(allProbs).sort(function(a, b) { return b[1] - a[1]; });
 
-  sorted.forEach(([clsName, prob]) => {
+  sorted.forEach(function(entry) {
+    const clsName = entry[0];
+    const prob = entry[1];
     const pct = (prob * 100).toFixed(1);
     const isWinner = clsName.toUpperCase() === winnerClass.toUpperCase();
 
     const row = document.createElement('div');
     row.className = 'snr-prob-bar';
-    row.innerHTML = `
-      <span class="snr-prob-bar__label" style="color: ${isWinner ? 'var(--accent-secondary)' : 'var(--muted-foreground)'}; font-weight: ${isWinner ? '700' : '400'}">${clsName}</span>
-      <div class="snr-prob-bar__track">
-        <div class="snr-prob-bar__fill" style="width:0%; background: ${isWinner ? 'var(--accent-secondary)' : 'var(--accent-tertiary)'}; box-shadow: ${isWinner ? '0 0 10px var(--accent-secondary)' : 'none'}" data-target="${pct}"></div>
-      </div>
-      <span class="snr-prob-bar__value" style="color: ${isWinner ? 'var(--accent-secondary)' : 'var(--foreground)'}">${pct}%</span>
-    `;
+    row.innerHTML =
+      '<span class="snr-prob-bar__label" style="color:' + (isWinner ? 'var(--accent-secondary)' : 'var(--muted-foreground)') + ';font-weight:' + (isWinner ? '700' : '400') + '">' + clsName + '</span>' +
+      '<div class="snr-prob-bar__track">' +
+        '<div class="snr-prob-bar__fill" style="width:0%;background:' + (isWinner ? 'var(--accent-secondary)' : 'var(--accent-tertiary)') + ';box-shadow:' + (isWinner ? '0 0 10px var(--accent-secondary)' : 'none') + '" data-target="' + pct + '"></div>' +
+      '</div>' +
+      '<span class="snr-prob-bar__value" style="color:' + (isWinner ? 'var(--accent-secondary)' : 'var(--foreground)') + '">' + pct + '%</span>';
     dom.probaBars.appendChild(row);
   });
 
-  // Animate width transition
-  requestAnimationFrame(() => {
-    setTimeout(() => {
-      dom.probaBars.querySelectorAll('.snr-prob-bar__fill').forEach(bar => {
-        bar.style.width = `${bar.dataset.target}%`;
+  requestAnimationFrame(function() {
+    setTimeout(function() {
+      dom.probaBars.querySelectorAll('.snr-prob-bar__fill').forEach(function(bar) {
+        bar.style.width = bar.dataset.target + '%';
       });
     }, 120);
   });
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   10. BACKEND HEALTH MONITOR
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 async function checkBackendHealth() {
   try {
-    const healthUrl = `${API_BASE_URL.replace(/\/+$/, '')}/health`;
-    const res = await fetch(healthUrl);
+    const healthUrl = API_BASE_URL.replace(/\/+$/, '') + '/health';
+    const res = await fetchWithTimeout(healthUrl, {}, 15000);
     if (res.ok) {
-      dom.statusBadge.textContent = 'SYS.ONLINE // AI_SIGINT_V1.0';
-      dom.backendStatus.textContent = `SYS_STATUS: ONLINE (${API_BASE_URL})`;
-      dom.statusDot.style.background = 'var(--accent)';
-      dom.statusDot.style.boxShadow = '0 0 8px var(--accent)';
+      setStatusOnline();
     } else {
-      throw new Error();
+      setStatusOffline();
     }
   } catch (_) {
-    dom.statusBadge.textContent = 'SYS.OFFLINE // CONNECT ERROR';
-    dom.backendStatus.textContent = `SYS_STATUS: OFFLINE (${API_BASE_URL})`;
-    dom.statusDot.style.background = 'var(--destructive)';
-    dom.statusDot.style.boxShadow = '0 0 8px var(--destructive)';
+    setStatusOffline();
   }
 }
 
-/* ═══════════════════════════════════════════════════════════════════════════
-   11. EVENT LISTENERS & BOOTSTRAP
-   ═══════════════════════════════════════════════════════════════════════════ */
-
 function initEventListeners() {
-  // File Input Changed
-  dom.fileInput.addEventListener('change', e => {
+  dom.fileInput.addEventListener('change', function(e) {
     if (e.target.files && e.target.files[0]) {
       handleFileSelection(e.target.files[0]);
     }
   });
 
-  // Drag & Drop Listeners
-  dom.dropZone.addEventListener('dragover', e => {
+  dom.dropZone.addEventListener('dragover', function(e) {
     e.preventDefault();
     dom.dropZone.classList.add('drag-over');
   });
 
-  dom.dropZone.addEventListener('dragleave', e => {
+  dom.dropZone.addEventListener('dragleave', function(e) {
     e.preventDefault();
     dom.dropZone.classList.remove('drag-over');
   });
 
-  dom.dropZone.addEventListener('drop', e => {
+  dom.dropZone.addEventListener('drop', function(e) {
     e.preventDefault();
     dom.dropZone.classList.remove('drag-over');
     if (e.dataTransfer.files && e.dataTransfer.files[0]) {
@@ -707,34 +597,30 @@ function initEventListeners() {
     }
   });
 
-  // Remove File
-  dom.removeFileBtn.addEventListener('click', () => {
+  dom.removeFileBtn.addEventListener('click', function() {
     clearFile();
     showToast('SIGNAL BUFFER CLEARED', 'success');
   });
 
-  // Execute Prediction
   dom.predictBtn.addEventListener('click', runPrediction);
 
-  // SDR Hardware Modal
-  dom.sdrBtn.addEventListener('click', () => {
+  dom.sdrBtn.addEventListener('click', function() {
     dom.sdrModal.classList.add('visible');
   });
 
-  dom.closeSdrModalBtn.addEventListener('click', () => {
+  dom.closeSdrModalBtn.addEventListener('click', function() {
     dom.sdrModal.classList.remove('visible');
   });
 
-  dom.sdrModal.addEventListener('click', e => {
+  dom.sdrModal.addEventListener('click', function(e) {
     if (e.target === dom.sdrModal) {
       dom.sdrModal.classList.remove('visible');
     }
   });
 
-  // Waveform View Tabs
-  dom.waveformTabs.forEach(tab => {
-    tab.addEventListener('click', () => {
-      dom.waveformTabs.forEach(t => {
+  dom.waveformTabs.forEach(function(tab) {
+    tab.addEventListener('click', function() {
+      dom.waveformTabs.forEach(function(t) {
         t.classList.remove('active');
         t.setAttribute('aria-selected', 'false');
       });
@@ -745,9 +631,8 @@ function initEventListeners() {
     });
   });
 
-  // Initial Health Check + Poll every 15 seconds
   checkBackendHealth();
-  setInterval(checkBackendHealth, 15000);
+  setInterval(checkBackendHealth, 30000);
 }
 
 document.addEventListener('DOMContentLoaded', initEventListeners);

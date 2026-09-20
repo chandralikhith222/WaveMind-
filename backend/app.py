@@ -1,25 +1,4 @@
-"""
-app.py
-------
-FastAPI backend for the Automatic Modulation Classification (AMC) project.
-
-Endpoints
----------
-GET  /health          → confirm server + models are up
-POST /predict         → unified prediction from uploaded .npy file (FormData)
-POST /predict/snr     → estimate SNR bucket from a raw I/Q signal (JSON)
-POST /predict/amc     → classify modulation using the appropriate AMC model (JSON)
-
-Startup sequence
-----------------
-1. Load SNR estimator     (models/snr_model.keras)
-2. Load High-SNR AMC      (models/high_snr_amc_model.keras)
-3. Load Medium-SNR AMC    (models/medium_snr_amc_model.keras)
-4. Load label encoder     (models/label_encoder.pkl)
-5. Server becomes ready
-"""
-
-import io
+﻿import io
 import os
 import pickle
 import logging
@@ -48,15 +27,9 @@ except ImportError:
         SIGNAL_LENGTH,
     )
 
-# ---------------------------------------------------------------------------
-# Logging
-# ---------------------------------------------------------------------------
 logging.basicConfig(level=logging.INFO, format="%(levelname)s: %(message)s")
 log = logging.getLogger(__name__)
 
-# ---------------------------------------------------------------------------
-# Paths — relative to this file, so they work anywhere
-# ---------------------------------------------------------------------------
 BASE_DIR   = Path(__file__).resolve().parent
 MODELS_DIR = BASE_DIR / "models"
 
@@ -66,14 +39,8 @@ MED_SNR_MODEL_PATH    = MODELS_DIR / "medium_snr_amc_model.keras"
 LOW_SNR_MODEL_PATH    = MODELS_DIR / "low_snr_amc_model.keras"
 LABEL_ENCODER_PATH    = MODELS_DIR / "label_encoder.pkl"
 
-# ---------------------------------------------------------------------------
-# SNR Class Labels: index 0 = low, 1 = medium, 2 = high
-# ---------------------------------------------------------------------------
 SNR_CLASS_LABELS = ["low", "medium", "high"]
 
-# ---------------------------------------------------------------------------
-# Global model store
-# ---------------------------------------------------------------------------
 models: dict = {
     "snr":        None,
     "high_amc":   None,
@@ -84,57 +51,46 @@ models: dict = {
 }
 
 
-# ---------------------------------------------------------------------------
-# Startup / shutdown lifecycle
-# ---------------------------------------------------------------------------
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     log.info("Loading models...")
 
-    # --- SNR Estimator ---
     if not SNR_MODEL_PATH.exists():
         raise FileNotFoundError(f"SNR model not found: {SNR_MODEL_PATH}")
     models["snr"] = tf.keras.models.load_model(str(SNR_MODEL_PATH))
-    log.info("SNR model loaded  ✓")
+    log.info("SNR model loaded")
 
-    # --- High-SNR AMC ---
     if not HIGH_SNR_MODEL_PATH.exists():
         raise FileNotFoundError(f"High-SNR AMC model not found: {HIGH_SNR_MODEL_PATH}")
     models["high_amc"] = tf.keras.models.load_model(str(HIGH_SNR_MODEL_PATH))
-    log.info("High-SNR AMC model loaded  ✓")
+    log.info("High-SNR AMC model loaded")
 
-    # --- Medium-SNR AMC ---
     if not MED_SNR_MODEL_PATH.exists():
         raise FileNotFoundError(f"Medium-SNR AMC model not found: {MED_SNR_MODEL_PATH}")
     models["medium_amc"] = tf.keras.models.load_model(str(MED_SNR_MODEL_PATH))
-    log.info("Medium-SNR AMC model loaded  ✓")
+    log.info("Medium-SNR AMC model loaded")
 
-    # --- Low-SNR AMC (if exists) ---
     if LOW_SNR_MODEL_PATH.exists():
         models["low_amc"] = tf.keras.models.load_model(str(LOW_SNR_MODEL_PATH))
-        log.info("Low-SNR AMC model loaded  ✓")
+        log.info("Low-SNR AMC model loaded")
     else:
         models["low_amc"] = None
-        log.info("Low-SNR AMC model offline (not present)  ℹ")
+        log.info("Low-SNR AMC model not present")
 
-    # --- Label Encoder ---
     if not LABEL_ENCODER_PATH.exists():
         raise FileNotFoundError(f"Label encoder not found: {LABEL_ENCODER_PATH}")
     with open(LABEL_ENCODER_PATH, "rb") as f:
         models["label_encoder"] = pickle.load(f)
-    log.info("Label encoder loaded  ✓  Classes: %s", models["label_encoder"].classes_.tolist())
+    log.info("Label encoder loaded. Classes: %s", models["label_encoder"].classes_.tolist())
 
     models["loaded"] = True
-    log.info("All models ready. Server is up.")
+    log.info("All models ready.")
 
     yield
 
-    log.info("Shutting down — releasing models.")
+    log.info("Shutting down.")
 
 
-# ---------------------------------------------------------------------------
-# FastAPI application
-# ---------------------------------------------------------------------------
 app = FastAPI(
     title="AMC Backend API",
     description="Automatic Modulation Classification with SNR Estimation.",
@@ -142,7 +98,10 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
-ALLOWED_ORIGINS = os.getenv("ALLOWED_ORIGINS", "*").split(",")
+ALLOWED_ORIGINS = os.getenv(
+    "ALLOWED_ORIGINS",
+    "https://wavemind.vercel.app,https://wavemind.onrender.com,http://localhost:5500,http://127.0.0.1:5500"
+).split(",")
 
 app.add_middleware(
     CORSMiddleware,
@@ -153,16 +112,13 @@ app.add_middleware(
 )
 
 
-# ---------------------------------------------------------------------------
-# Request / Response schemas
-# ---------------------------------------------------------------------------
 class SignalInput(BaseModel):
     signal: list[float]
 
     @field_validator("signal")
     @classmethod
     def check_length(cls, v):
-        expected = 2 * SIGNAL_LENGTH   # 256
+        expected = 2 * SIGNAL_LENGTH
         if len(v) == 0:
             raise ValueError("signal is empty.")
         if len(v) != expected:
@@ -191,7 +147,6 @@ class AMCResponse(BaseModel):
 
 
 def _extract_iq_from_array(arr: np.ndarray) -> np.ndarray:
-    """Normalize any loaded numpy array shape to canonical (2, 128)."""
     arr = arr.astype(np.float32)
     if arr.ndim == 2 and arr.shape == (2, SIGNAL_LENGTH):
         return arr
@@ -208,9 +163,6 @@ def _extract_iq_from_array(arr: np.ndarray) -> np.ndarray:
         )
 
 
-# ---------------------------------------------------------------------------
-# Endpoints
-# ---------------------------------------------------------------------------
 @app.get("/health", summary="Health check")
 def health():
     return {
@@ -227,10 +179,6 @@ def health():
 
 @app.post("/predict", summary="Unified prediction from uploaded .npy file")
 async def predict_unified(file: UploadFile = File(...)):
-    """
-    Unified prediction endpoint taking a .npy file upload (multipart/form-data).
-    Performs SNR estimation, SNR region classification, and AMC classification.
-    """
     if not models["loaded"]:
         raise HTTPException(status_code=503, detail="Models are not loaded yet.")
 
@@ -247,10 +195,9 @@ async def predict_unified(file: UploadFile = File(...)):
     except Exception as e:
         raise HTTPException(status_code=422, detail=f"INVALID NPY SIGNAL DATA: {str(e)}")
 
-    # Step 1: SNR Estimation
     try:
         snr_x = preprocess_for_snr(iq)
-        snr_probs = models["snr"].predict(snr_x, verbose=0)[0]  # [p_low, p_med, p_high]
+        snr_probs = models["snr"].predict(snr_x, verbose=0)[0]
         snr_idx = int(np.argmax(snr_probs))
         snr_label = SNR_CLASS_LABELS[snr_idx]
         snr_conf = float(snr_probs[snr_idx])
@@ -264,16 +211,12 @@ async def predict_unified(file: UploadFile = File(...)):
         "LOW":    round(float(snr_probs[0]), 4),
     }
 
-    # Step 2: Route to AMC Expert Model
-    # NOTE: The medium AMC model covers SNR down to 0 dB, so both "medium"
-    # and "low" SNR classes are handled by medium_amc. The SNR classifier
-    # output is preserved as-is — only the AMC routing changes.
     amc_model = None
     preprocess_fn = None
     if snr_label == "high":
         amc_model = models["high_amc"]
         preprocess_fn = preprocess_for_high_snr_amc
-    else:  # "medium" or "low" — both routed to the medium AMC model
+    else:
         amc_model = models["medium_amc"]
         preprocess_fn = preprocess_for_medium_snr_amc
 
@@ -355,7 +298,6 @@ def predict_amc(body: SignalInput):
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
-    # Step 1: SNR routing
     try:
         snr_x     = preprocess_for_snr(iq)
         snr_probs = models["snr"].predict(snr_x, verbose=0)[0]
@@ -365,14 +307,10 @@ def predict_amc(body: SignalInput):
         log.error("SNR routing failed: %s", e)
         raise HTTPException(status_code=500, detail="SNR estimation step failed.")
 
-    # Step 2: Route to AMC model
-    # NOTE: The medium AMC model covers SNR down to 0 dB, so both "medium"
-    # and "low" SNR classes are handled by medium_amc. The SNR classifier
-    # output is preserved as-is — only the AMC routing changes.
     if snr_class == "high":
         amc_model = models["high_amc"]
         preprocess_fn = preprocess_for_high_snr_amc
-    else:  # "medium" or "low" — both routed to the medium AMC model
+    else:
         amc_model = models["medium_amc"]
         preprocess_fn = preprocess_for_medium_snr_amc
 
